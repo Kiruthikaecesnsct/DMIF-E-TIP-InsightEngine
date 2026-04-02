@@ -1,0 +1,147 @@
+﻿@page "/"
+@using InsightEngine.Services.Agents
+@using InsightEngine.Models.Agents
+@inject QueryInterpreterAgent QueryAgent
+@inject ILogger<Home> Logger
+
+<PageTitle>InsightEngine</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">
+    InsightEngine — Week 13 Test
+</MudText>
+
+<MudTextField @bind-Value="_testQuestion"
+              Label="Test Question"
+              Variant="Variant.Outlined"
+              FullWidth="true"
+              Class="mb-3" />
+
+<MudButton Variant="Variant.Filled"
+           Color="Color.Primary"
+           OnClick="TestAgent"
+           Disabled="_isLoading">
+
+    @if (_isLoading)
+    {
+        <MudProgressCircular Size="Size.Small"
+                             Indeterminate="true"
+                             Class="mr-2" />
+        <span>Processing...</span>
+    }
+    else
+    {
+        <span>Test Query Interpreter</span>
+    }
+</MudButton>
+
+<!-- Debug Info -->
+<MudText Class="mt-2">Loading State: @_isLoading</MudText>
+
+@if (!string.IsNullOrEmpty(_generatedSQL))
+{
+    <MudCard Class="mt-4">
+        <MudCardContent>
+            <MudText Typo="Typo.h6">Generated SQL:</MudText>
+
+            <MudPaper Class="pa-3 mt-2"
+                      Style="font-family: monospace; white-space: pre-wrap; background:#f5f5f5;">
+                @_generatedSQL
+            </MudPaper>
+
+            <MudDivider Class="my-3" />
+
+            <MudText>
+                <strong>Confidence:</strong> @_confidence.ToString("P0")
+            </MudText>
+
+            <MudText Class="mt-1">
+                <strong>Explanation:</strong> @_explanation
+            </MudText>
+        </MudCardContent>
+    </MudCard>
+}
+
+@if (!string.IsNullOrEmpty(_error))
+{
+    <MudAlert Severity="Severity.Error" Class="mt-4">
+        @_error
+    </MudAlert>
+}
+
+@code {
+    private string _testQuestion =
+        "What were the top 5 products by revenue last quarter?";
+
+    private string _generatedSQL = string.Empty;
+    private string _explanation = string.Empty;
+    private double _confidence;
+    private string _error = string.Empty;
+    private bool _isLoading;
+
+    private async Task TestAgent()
+    {
+        Console.WriteLine("🔥 Button Clicked");
+
+        _isLoading = true;
+        _error = string.Empty;
+        _generatedSQL = string.Empty;
+        _explanation = string.Empty;
+        _confidence = 0;
+
+        StateHasChanged(); // force UI update
+
+        try
+        {
+            var sampleSchema = @"Table: Products
+  Columns:
+    - ProductId (int) [PK, NOT NULL]
+    - ProductName (varchar) [NOT NULL]
+    - Category (varchar)
+    - Price (decimal) [NOT NULL]
+
+Table: Orders
+  Columns:
+    - OrderId (int) [PK, NOT NULL]
+    - CustomerId (int) [FK, NOT NULL]
+    - OrderDate (date) [NOT NULL]
+    - TotalAmount (decimal) [NOT NULL]
+
+Table: OrderItems
+  Columns:
+    - OrderItemId (int) [PK, NOT NULL]
+    - OrderId (int) [FK, NOT NULL]
+    - ProductId (int) [FK, NOT NULL]
+    - Quantity (int) [NOT NULL]
+    - Revenue (decimal) [NOT NULL]";
+
+            Console.WriteLine("🚀 Calling Agent...");
+
+            var result = await QueryAgent.InterpretQueryAsync(
+                _testQuestion, sampleSchema);
+
+            Console.WriteLine("✅ Agent Response Received");
+
+            if (result != null)
+            {
+                _generatedSQL = result.GeneratedSQL ?? "No SQL returned";
+                _explanation = result.Explanation ?? "No explanation";
+                _confidence = result.Confidence;
+            }
+            else
+            {
+                _error = "Agent returned null response";
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = ex.ToString(); // full error for debugging
+            Console.WriteLine("❌ ERROR: " + ex);
+            Logger.LogError(ex, "Integration test failed");
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged(); // ensure UI refresh
+        }
+    }
+}
