@@ -54,14 +54,14 @@ namespace InsightEngine.Services.Agents
       
 
             var apiKey = _config["SemanticKernel:ApiKey"];
-
+            Console.WriteLine($"API KEY FROM CONFIG: {_config["SemanticKernel:ApiKey"]}");
             if (string.IsNullOrWhiteSpace(apiKey))
                 throw new Exception("Gemini API key missing in appsettings.json");
 
             using var httpClient = new HttpClient();
 
             var url =
-                $"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={apiKey}";
+                $"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={apiKey}";
 
             var requestBody = new
             {
