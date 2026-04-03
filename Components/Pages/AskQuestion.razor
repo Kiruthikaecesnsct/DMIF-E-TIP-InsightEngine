@@ -1,0 +1,253 @@
+﻿@page "/ask"
+@using InsightEngine.Models.DataSources
+@using InsightEngine.Repositories
+@using InsightEngine.Services
+@using InsightEngine.Services.Agents
+@using System.Text.Json
+@inject QueryInterpreterAgent QueryAgent
+@inject SqlExecutorService SqlExecutor
+@inject IDataSourceRepository DataSourceRepo
+@inject IQueryRepository QueryRepo
+@inject ISnackbar Snackbar
+
+<PageTitle>Ask a Question</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Ask a Business Question</MudText>
+
+<MudGrid>
+    <MudItem xs="12">
+        <MudSelect T="string"
+                   Label="Select Data Source"
+                   @bind-Value="_selectedDataSourceId"
+                   Variant="Variant.Outlined"
+                   Class="mb-3">
+            @foreach (var ds in _dataSources)
+            {
+                <MudSelectItem Value="@ds.Id">@ds.Name</MudSelectItem>
+            }
+        </MudSelect>
+    </MudItem>
+
+    <MudItem xs="12">
+        <MudTextField @bind-Value="_question"
+                      Label="Ask your question in plain English"
+                      Placeholder="e.g. What were the top 5 products by revenue last quarter?"
+                      Variant="Variant.Outlined"
+                      Lines="3"
+                      FullWidth="true"
+                      Class="mb-3" />
+    </MudItem>
+
+    <MudItem xs="12">
+        <MudButton Variant="Variant.Filled"
+                   Color="Color.Primary"
+                   OnClick="AskQuestions"
+                   Disabled="@(_isLoading || string.IsNullOrWhiteSpace(_question))"
+                   Size="Size.Large">
+            @if (_isLoading)
+            {
+                <MudProgressCircular Size="Size.Small"
+                                     Indeterminate="true"
+                                     Class="mr-2" />
+                <span>Analyzing...</span>
+            }
+            else
+            {
+                <MudIcon Icon="@Icons.Material.Filled.Search" Class="mr-2" />
+                <span>Ask Question</span>
+            }
+        </MudButton>
+    </MudItem>
+</MudGrid>
+
+@if (!string.IsNullOrEmpty(_errorMessage))
+{
+    <MudAlert Severity="Severity.Error" Class="mt-4" ShowCloseIcon="true"
+              CloseIconClicked="() => _errorMessage = string.Empty">
+        @_errorMessage
+    </MudAlert>
+}
+
+@if (_result != null)
+{
+    <MudDivider Class="my-4" />
+
+    <!-- Metadata Row -->
+    <MudGrid Class="mb-3">
+        <MudItem xs="12" sm="4">
+            <MudChip T="String" Color="Color.Success" Icon="@Icons.Material.Filled.CheckCircle">
+                Confidence: @(_result.Confidence.ToString("P0"))
+            </MudChip>
+        </MudItem>
+        <MudItem xs="12" sm="4">
+            <MudChip T="String" Color="Color.Info" Icon="@Icons.Material.Filled.Timer">
+                @(_result.ExecutionTimeMs)ms
+            </MudChip>
+        </MudItem>
+        <MudItem xs="12" sm="4">
+            <MudChip T="String" Color="Color.Primary" Icon="@Icons.Material.Filled.TableRows">
+                @(_result.RowCount) rows
+            </MudChip>
+        </MudItem>
+    </MudGrid>
+
+    <!-- Explanation -->
+    <MudAlert Severity="Severity.Info" Class="mb-3">
+        @_result.Explanation
+    </MudAlert>
+
+    <!-- Generated SQL -->
+    <MudExpansionPanels Class="mb-4">
+        <MudExpansionPanel Text="View Generated SQL">
+            <MudText Typo="Typo.body2"
+                     Style="font-family: monospace; white-space: pre-wrap;
+                            background:#f5f5f5; padding:16px; border-radius:4px">
+                @_result.GeneratedSQL
+            </MudText>
+        </MudExpansionPanel>
+    </MudExpansionPanels>
+
+    <!-- Results Table -->
+    @if (_rows.Any())
+    {
+        <MudText Typo="Typo.h6" Class="mb-2">Results</MudText>
+        <MudTable Items="@_rows"
+                  Hover="true"
+                  Striped="true"
+                  Bordered="true"
+                  Dense="true"
+                  Elevation="1">
+            <HeaderContent>
+                @foreach (var col in _columns)
+                {
+                    <MudTh>@col</MudTh>
+                }
+            </HeaderContent>
+            <RowTemplate>
+                @foreach (var col in _columns)
+                {
+                    <MudTd>
+                        @(context.ContainsKey(col) ? context[col]?.ToString() : "")
+                    </MudTd>
+                }
+            </RowTemplate>
+        </MudTable>
+    }
+}
+
+@code {
+    private List<DataSource> _dataSources = new();
+    private string _selectedDataSourceId = string.Empty;
+    private string _question = string.Empty;
+    private bool _isLoading;
+    private string _errorMessage = string.Empty;
+
+    private InsightEngine.Models.Queries.QueryResult? _result;
+    private List<Dictionary<string, object>> _rows = new();
+    private List<string> _columns = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _dataSources = await DataSourceRepo.GetAllActiveAsync();
+        if (_dataSources.Any())
+            _selectedDataSourceId = _dataSources.First().Id;
+    }
+
+    private async Task AskQuestions()
+    {
+        if (string.IsNullOrWhiteSpace(_question))
+        {
+            _errorMessage = "Please enter a question.";
+            return;
+        }
+
+        _isLoading = true;
+        _errorMessage = string.Empty;
+        _result = null;
+        _rows = new();
+        _columns = new();
+
+        try
+        {
+            // Get selected data source
+            var dataSource = await DataSourceRepo
+                .GetByIdAsync(_selectedDataSourceId);
+
+            if (dataSource == null)
+            {
+                _errorMessage = "Please select a valid data source.";
+                return;
+            }
+
+            // Save query request
+            var queryRequest = new InsightEngine.Models.Queries.QueryRequest
+            {
+                NaturalLanguageQuery = _question,
+                DataSourceId = _selectedDataSourceId,
+                Status = InsightEngine.Models.Queries.QueryStatus.Processing
+            };
+            await QueryRepo.SaveQueryAsync(queryRequest);
+
+            // Call Query Interpreter Agent
+            var agentResult = await QueryAgent.InterpretQueryAsync(
+                _question, dataSource.SchemaMetadata);
+
+            if (string.IsNullOrEmpty(agentResult.GeneratedSQL))
+            {
+                _errorMessage = "Agent could not generate a SQL query. " +
+                                "Please try rephrasing your question.";
+                return;
+            }
+
+            // Validate SQL safety
+            if (!QueryAgent.ValidateQuery(agentResult.GeneratedSQL))
+            {
+                _errorMessage = "Generated query failed safety validation.";
+                return;
+            }
+
+            // Execute query
+            var execution = await SqlExecutor.ExecuteQueryAsync(
+                agentResult.GeneratedSQL,
+                dataSource.ConnectionString);
+
+            // Build result
+            _result = new InsightEngine.Models.Queries.QueryResult
+            {
+                QueryRequestId = queryRequest.Id,
+                GeneratedSQL = agentResult.GeneratedSQL,
+                Confidence = agentResult.Confidence,
+                TablesUsed = agentResult.TablesUsed,
+                Explanation = agentResult.Explanation,
+                ExecutionTimeMs = execution.ExecutionTimeMs,
+                RowCount = execution.RowCount,
+                RawResults = JsonSerializer.Serialize(execution.Rows),
+                ErrorMessage = execution.ErrorMessage
+            };
+
+            // Save result
+            await QueryRepo.SaveResultAsync(_result);
+
+            if (!execution.IsSuccess)
+            {
+                _errorMessage = execution.ErrorMessage ?? "Query execution failed.";
+                return;
+            }
+
+            // Build table columns and rows
+            _rows = execution.Rows;
+            if (_rows.Any())
+                _columns = _rows.First().Keys.ToList();
+
+            Snackbar.Add("Query completed successfully!", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"An error occurred: {ex.Message}";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+}

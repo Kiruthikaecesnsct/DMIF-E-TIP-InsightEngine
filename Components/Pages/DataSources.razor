@@ -1,0 +1,272 @@
+﻿@page "/datasources"
+@using InsightEngine.Models.DataSources
+@using InsightEngine.Repositories
+@using InsightEngine.Services
+@using System.Text.Json
+@inject IDataSourceRepository DataSourceRepo
+@inject SchemaIntrospectionService SchemaService
+@inject ISnackbar Snackbar
+
+<PageTitle>Data Sources</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Data Sources</MudText>
+
+<!-- Add New Data Source -->
+<MudCard Class="mb-4">
+    <MudCardHeader>
+        <CardHeaderContent>
+            <MudText Typo="Typo.h6">Add New Data Source</MudText>
+        </CardHeaderContent>
+    </MudCardHeader>
+    <MudCardContent>
+        <MudGrid>
+            <MudItem xs="12" sm="4">
+                <MudTextField @bind-Value="_newName"
+                              Label="Name"
+                              Variant="Variant.Outlined"
+                              FullWidth="true" />
+            </MudItem>
+            <MudItem xs="12" sm="4">
+                <MudSelect T="DataSourceType"
+                           Label="Type"
+                           @bind-Value="_newType"
+                           Variant="Variant.Outlined">
+                    <MudSelectItem Value="DataSourceType.SqlServer">
+                        SQL Server
+                    </MudSelectItem>
+                    <MudSelectItem Value="DataSourceType.PostgreSQL">
+                        PostgreSQL
+                    </MudSelectItem>
+                    <MudSelectItem Value="DataSourceType.MySQL">
+                        MySQL
+                    </MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" sm="4">
+                <MudTextField @bind-Value="_newConnectionString"
+                              Label="Connection String"
+                              Variant="Variant.Outlined"
+                              FullWidth="true"
+                              InputType="InputType.Password" />
+            </MudItem>
+        </MudGrid>
+    </MudCardContent>
+    <MudCardActions>
+        <MudButton Variant="Variant.Filled"
+                   Color="Color.Primary"
+                   OnClick="AddDataSource"
+                   Disabled="_isSaving">
+            @if (_isSaving)
+            {
+                <MudProgressCircular Size="Size.Small"
+                                     Indeterminate="true"
+                                     Class="mr-2" />
+            }
+            Add Data Source
+        </MudButton>
+    </MudCardActions>
+</MudCard>
+
+<!-- Data Source List -->
+@if (_isLoading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else if (!_dataSources.Any())
+{
+    <MudAlert Severity="Severity.Info">
+        No data sources yet. Add one above to get started.
+    </MudAlert>
+}
+else
+{
+    @foreach (var ds in _dataSources)
+    {
+        <MudCard Class="mb-3">
+            <MudCardHeader>
+                <CardHeaderContent>
+                    <MudText Typo="Typo.h6">@ds.Name</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">
+                        @ds.Type — Created @ds.CreatedDate.ToLocalTime()
+                            .ToString("dd MMM yyyy")
+                    </MudText>
+                </CardHeaderContent>
+                <CardHeaderActions>
+                    <MudChip T="String" Color="@(ds.IsActive ? Color.Success : Color.Default)"
+                             Size="Size.Small">
+                        @(ds.IsActive ? "Active" : "Inactive")
+                    </MudChip>
+                </CardHeaderActions>
+            </MudCardHeader>
+            <MudCardActions>
+                <MudButton Size="Size.Small"
+                           Variant="Variant.Outlined"
+                           Color="Color.Info"
+                           OnClick="() => TestConnection(ds)">
+                    Test Connection
+                </MudButton>
+                <MudButton Size="Size.Small"
+                           Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           OnClick="() => IntrospectSchema(ds)">
+                    Introspect Schema
+                </MudButton>
+                <MudButton Size="Size.Small"
+                           Variant="Variant.Outlined"
+                           Color="Color.Secondary"
+                           OnClick="() => ViewSchema(ds)">
+                    View Schema
+                </MudButton>
+                <MudButton Size="Size.Small"
+                           Variant="Variant.Outlined"
+                           Color="@(ds.IsActive ? Color.Warning : Color.Success)"
+                           OnClick="() => ToggleActive(ds)">
+                    @(ds.IsActive ? "Disable" : "Enable")
+                </MudButton>
+                <MudButton Size="Size.Small"
+                           Variant="Variant.Outlined"
+                           Color="Color.Error"
+                           OnClick="() => DeleteDataSource(ds.Id)">
+                    Delete
+                </MudButton>
+            </MudCardActions>
+
+            @if (_schemaViewId == ds.Id &&
+                 !string.IsNullOrEmpty(ds.SchemaMetadata))
+            {
+                <MudCardContent>
+                    <MudText Typo="Typo.body2"
+                             Style="font-family: monospace; white-space: pre-wrap;
+                                    background:#f5f5f5; padding:12px;
+                                    border-radius:4px; font-size:12px">
+                        @ds.SchemaMetadata
+                    </MudText>
+                </MudCardContent>
+            }
+        </MudCard>
+    }
+}
+
+@code {
+    private List<DataSource> _dataSources = new();
+    private bool _isLoading = true;
+    private bool _isSaving;
+
+    private string _newName = string.Empty;
+    private DataSourceType _newType = DataSourceType.SqlServer;
+    private string _newConnectionString = string.Empty;
+    private string? _schemaViewId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataSources();
+    }
+
+    private async Task LoadDataSources()
+    {
+        _isLoading = true;
+        _dataSources = await DataSourceRepo.GetAllActiveAsync();
+        _isLoading = false;
+    }
+
+    private async Task AddDataSource()
+    {
+        if (string.IsNullOrWhiteSpace(_newName) ||
+            string.IsNullOrWhiteSpace(_newConnectionString))
+        {
+            Snackbar.Add("Name and connection string are required.",
+                Severity.Warning);
+            return;
+        }
+
+        _isSaving = true;
+
+        try
+        {
+            var ds = new DataSource
+            {
+                Name = _newName,
+                Type = _newType,
+                ConnectionString = _newConnectionString,
+                IsActive = true
+            };
+
+            await DataSourceRepo.CreateAsync(ds);
+
+            _newName = string.Empty;
+            _newConnectionString = string.Empty;
+
+            Snackbar.Add("Data source added successfully!", Severity.Success);
+            await LoadDataSources();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private async Task TestConnection(DataSource ds)
+    {
+        try
+        {
+            using var connection = new Microsoft.Data.SqlClient.SqlConnection(
+                ds.ConnectionString);
+            await connection.OpenAsync();
+            Snackbar.Add($"Connection to '{ds.Name}' successful!", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Connection failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task IntrospectSchema(DataSource ds)
+    {
+        try
+        {
+            Snackbar.Add("Introspecting schema...", Severity.Info);
+
+            var schemas = await SchemaService
+                .IntrospectSqlServerAsync(ds.ConnectionString);
+            var description = SchemaService.GenerateSchemaDescription(schemas);
+
+            await DataSourceRepo.UpdateSchemaAsync(ds.Id, description);
+
+            Snackbar.Add(
+                $"Schema introspected: {schemas.Count} tables found.",
+                Severity.Success);
+
+            await LoadDataSources();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Introspection failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private void ViewSchema(DataSource ds)
+    {
+        _schemaViewId = _schemaViewId == ds.Id ? null : ds.Id;
+    }
+
+    private async Task ToggleActive(DataSource ds)
+    {
+        ds.IsActive = !ds.IsActive;
+        await DataSourceRepo.UpdateSchemaAsync(ds.Id, ds.SchemaMetadata);
+        Snackbar.Add(
+            $"Data source {(ds.IsActive ? "enabled" : "disabled")}.",
+            Severity.Info);
+        await LoadDataSources();
+    }
+
+    private async Task DeleteDataSource(string id)
+    {
+        await DataSourceRepo.DeleteAsync(id);
+        Snackbar.Add("Data source deleted.", Severity.Warning);
+        await LoadDataSources();
+    }
+}

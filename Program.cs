@@ -19,8 +19,10 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<MongoDbService>();
 builder.Services.AddScoped<SchemaIntrospectionService>();
 builder.Services.AddScoped<QueryInterpreterAgent>();
+builder.Services.AddScoped<SqlExecutorService>();
 builder.Services.AddScoped<IDataSourceRepository, DataSourceRepository>();
 builder.Services.AddScoped<IQueryRepository, QueryRepository>();
+
 
 // Controllers for API endpoints 
 builder.Services.AddControllers();

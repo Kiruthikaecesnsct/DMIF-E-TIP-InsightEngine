@@ -1,0 +1,117 @@
+﻿@page "/history"
+@using InsightEngine.Models.Queries
+@using InsightEngine.Repositories
+@inject IQueryRepository QueryRepo
+
+<PageTitle>Query History</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Query History</MudText>
+
+@if (_isLoading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else if (!_queries.Any())
+{
+    <MudAlert Severity="Severity.Info">
+        No queries yet. Go to Ask a Question to get started.
+    </MudAlert>
+}
+else
+{
+    <MudTable Items="@_queries"
+              Hover="true"
+              Striped="true"
+              Bordered="true"
+              Dense="true"
+              Elevation="1">
+        <HeaderContent>
+            <MudTh>Question</MudTh>
+            <MudTh>Date</MudTh>
+            <MudTh>Status</MudTh>
+            <MudTh>Actions</MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd>
+                <MudText Typo="Typo.body2">@context.NaturalLanguageQuery</MudText>
+            </MudTd>
+            <MudTd>@context.CreatedDate.ToLocalTime().ToString("dd MMM yyyy HH:mm")</MudTd>
+            <MudTd>
+                <MudChip T="String" Color="@GetStatusColor(context.Status)" Size="Size.Small">
+                    @context.Status
+                </MudChip>
+            </MudTd>
+            <MudTd>
+                <MudButton Size="Size.Small"
+                           Variant="Variant.Outlined"
+                           OnClick="() => ViewResult(context.Id)">
+                    View
+                </MudButton>
+            </MudTd>
+        </RowTemplate>
+    </MudTable>
+}
+
+@if (_selectedResult != null)
+{
+    <MudDivider Class="my-4" />
+    <MudText Typo="Typo.h6" Class="mb-2">Query Details</MudText>
+
+    <MudGrid Class="mb-3">
+        <MudItem xs="12" sm="4">
+            <MudChip T="String" Color="Color.Success">
+                Confidence: @(_selectedResult.Confidence.ToString("P0"))
+            </MudChip>
+        </MudItem>
+        <MudItem xs="12" sm="4">
+            <MudChip T="String" Color="Color.Info">
+                @(_selectedResult.ExecutionTimeMs)ms
+            </MudChip>
+        </MudItem>
+        <MudItem xs="12" sm="4">
+            <MudChip T="String" Color="Color.Primary">
+                @(_selectedResult.RowCount) rows
+            </MudChip>
+        </MudItem>
+    </MudGrid>
+
+    <MudAlert Severity="Severity.Info" Class="mb-3">
+        @_selectedResult.Explanation
+    </MudAlert>
+
+    <MudExpansionPanels Class="mb-3">
+        <MudExpansionPanel Text="Generated SQL">
+            <MudText Typo="Typo.body2"
+                     Style="font-family: monospace; white-space: pre-wrap;
+                            background:#f5f5f5; padding:16px; border-radius:4px">
+                @_selectedResult.GeneratedSQL
+            </MudText>
+        </MudExpansionPanel>
+    </MudExpansionPanels>
+}
+
+@code {
+    private List<QueryRequest> _queries = new();
+    private QueryResult? _selectedResult;
+    private bool _isLoading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _queries = await QueryRepo.GetUserQueriesAsync("default-user");
+        _isLoading = false;
+    }
+
+    private async Task ViewResult(string queryRequestId)
+    {
+        _selectedResult = await QueryRepo
+            .GetResultByRequestIdAsync(queryRequestId);
+    }
+
+    private Color GetStatusColor(QueryStatus status) => status switch
+    {
+        QueryStatus.Completed => Color.Success,
+        QueryStatus.Processing => Color.Warning,
+        QueryStatus.Failed => Color.Error,
+        _ => Color.Default
+    };
+}
