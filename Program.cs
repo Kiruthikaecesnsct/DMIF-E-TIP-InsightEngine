@@ -26,6 +26,8 @@ builder.Services.AddScoped<SqlExecutorService>();
 builder.Services.AddScoped<DataAnalystAgent>();
 builder.Services.AddScoped<VisualizationAgent>();
 builder.Services.AddScoped<AnalysisPipelineService>();
+builder.Services.AddScoped<AnomalyDetectionService>();
+builder.Services.AddScoped<DashboardService>();
 builder.Services.AddScoped<IDataSourceRepository, DataSourceRepository>();
 builder.Services.AddScoped<IQueryRepository, QueryRepository>();
 

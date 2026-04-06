@@ -1,0 +1,144 @@
+﻿@using InsightEngine.Models.Agents
+@using InsightEngine.Services
+
+@if (Statistics == null && !Trends.Any() && !Outliers.Any() && !Anomalies.Any())
+{
+    return;
+}
+
+<MudExpansionPanels MultiExpansion="true" Class="mb-4">
+
+    @if (Statistics != null && Statistics.Any())
+    {
+        <MudExpansionPanel Text="📊 Key Statistics" IsInitiallyExpanded="true">
+            <MudGrid>
+                @foreach (var stat in GetDisplayStats())
+                {
+                    <MudItem xs="6" sm="3">
+                        <MudCard Elevation="1">
+                            <MudCardContent Class="pa-3">
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                    @stat.Key
+                                </MudText>
+                                <MudText Typo="Typo.h6">@stat.Value</MudText>
+                            </MudCardContent>
+                        </MudCard>
+                    </MudItem>
+                }
+            </MudGrid>
+        </MudExpansionPanel>
+    }
+
+    @if (Trends.Any())
+    {
+        <MudExpansionPanel Text="📈 Detected Trends" IsInitiallyExpanded="true">
+            <MudStack Row="true" Wrap="Wrap.Wrap">
+                @foreach (var trend in Trends)
+                {
+                    <MudChip T="String" Color="@GetTrendColor(trend.Type)"
+                             Icon="@GetTrendIcon(trend.Type)"
+                             Variant="Variant.Filled">
+                        @trend.Column: @trend.Type (@trend.Magnitude.ToString("F1")%)
+                    </MudChip>
+                }
+            </MudStack>
+        </MudExpansionPanel>
+    }
+
+    @if (Outliers.Any())
+    {
+        <MudExpansionPanel Text="⚠️ Outliers Detected">
+            <MudSimpleTable Dense="true">
+                <thead>
+                    <tr>
+                        <th>Column</th>
+                        <th>Value</th>
+                        <th>Type</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var o in Outliers)
+                    {
+                        <tr>
+                            <td>@o.Column</td>
+                            <td>@o.Value.ToString("N2")</td>
+                            <td>
+                                <MudChip T="String" Size="Size.Small"
+                                         Color="@(o.Type == "High" ? Color.Warning : Color.Info)">
+                                    @o.Type
+                                </MudChip>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+        </MudExpansionPanel>
+    }
+
+    @if (Anomalies.Any())
+    {
+        <MudExpansionPanel Text="🚨 Anomaly Alerts">
+            <MudStack Spacing="2">
+                @foreach (var alert in Anomalies)
+                {
+                    <MudAlert Severity="@(alert.Severity == "Critical"
+                        ? Severity.Error : Severity.Warning)"
+                              Dense="true">
+                        <strong>@alert.Type</strong> — @alert.Message
+                    </MudAlert>
+                }
+            </MudStack>
+        </MudExpansionPanel>
+    }
+
+</MudExpansionPanels>
+
+@code {
+    [Parameter] public Dictionary<string, object>? Statistics { get; set; }
+    [Parameter] public List<Trend> Trends { get; set; } = new();
+    [Parameter] public List<Outlier> Outliers { get; set; } = new();
+    [Parameter] public List<AnomalyAlert> Anomalies { get; set; } = new();
+    [Parameter] public string NumberFormat { get; set; } = "number";
+
+    private List<KeyValuePair<string, string>> GetDisplayStats()
+    {
+        var result = new List<KeyValuePair<string, string>>();
+        if (Statistics == null) return result;
+
+        var keyTypes = new[] { "_total", "_average", "_max", "_min" };
+        foreach (var stat in Statistics)
+        {
+            if (keyTypes.Any(t => stat.Key.EndsWith(t)))
+            {
+                var label = stat.Key
+                    .Replace("_total", " Total")
+                    .Replace("_average", " Avg")
+                    .Replace("_max", " Max")
+                    .Replace("_min", " Min")
+                    .Replace("_", " ");
+
+                var val = stat.Value is double d
+                    ? (NumberFormat == "currency" ? d.ToString("C0") : d.ToString("N2"))
+                    : stat.Value?.ToString() ?? "";
+
+                result.Add(new KeyValuePair<string, string>(label, val));
+                if (result.Count >= 8) break;
+            }
+        }
+        return result;
+    }
+
+    private Color GetTrendColor(string type) => type switch
+    {
+        "increasing" => Color.Success,
+        "decreasing" => Color.Error,
+        _ => Color.Default
+    };
+
+    private string GetTrendIcon(string type) => type switch
+    {
+        "increasing" => Icons.Material.Filled.TrendingUp,
+        "decreasing" => Icons.Material.Filled.TrendingDown,
+        _ => Icons.Material.Filled.TrendingFlat
+    };
+}

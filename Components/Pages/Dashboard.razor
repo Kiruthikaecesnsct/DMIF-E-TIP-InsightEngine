@@ -1,0 +1,152 @@
+﻿@page "/dashboard"
+@using InsightEngine.Models.DataSources
+@using InsightEngine.Repositories
+@using InsightEngine.Services
+@inject IDataSourceRepository DataSourceRepo
+@inject DashboardService DashboardSvc
+@inject ISnackbar Snackbar
+
+<PageTitle>Dashboard</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Multi-Chart Dashboard</MudText>
+
+<MudGrid Class="mb-4">
+    <MudItem xs="12" sm="5">
+        <MudSelect T="string"
+                   Label="Data Source"
+                   @bind-Value="_selectedDataSourceId"
+                   Variant="Variant.Outlined"
+                   FullWidth="true">
+            @foreach (var ds in _dataSources)
+            {
+                <MudSelectItem Value="@ds.Id">@ds.Name</MudSelectItem>
+            }
+        </MudSelect>
+    </MudItem>
+
+    <MudItem xs="12" sm="5">
+        <MudTextField @bind-Value="_question"
+                      Label="What would you like a dashboard for?"
+                      Placeholder="e.g. Show me overall sales performance"
+                      Variant="Variant.Outlined"
+                      FullWidth="true" />
+    </MudItem>
+
+    <MudItem xs="12" sm="2" Style="display:flex; align-items:center;">
+        <MudButton Variant="Variant.Filled"
+                   Color="Color.Primary"
+                   FullWidth="true"
+                   OnClick="GenerateDashboard"
+                   Disabled="@(_isLoading || string.IsNullOrWhiteSpace(_question))">
+            @if (_isLoading)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                <span>Building...</span>
+            }
+            else
+            {
+                <span>Generate</span>
+            }
+        </MudButton>
+    </MudItem>
+</MudGrid>
+
+@if (_isLoading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-4" />
+}
+
+@if (_dashboard != null && _dashboard.Success)
+{
+    <MudGrid>
+        @foreach (var panel in _dashboard.Panels.OrderBy(p => p.Order))
+        {
+            <MudItem xs="12" sm="6">
+                <MudCard Elevation="2" Class="mb-2">
+                    <MudCardHeader>
+                        <CardHeaderContent>
+                            <MudText Typo="Typo.h6">@panel.Title</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                @panel.SubQuestion
+                            </MudText>
+                        </CardHeaderContent>
+                        <CardHeaderActions>
+                            @if (panel.Result?.Success == true)
+                            {
+                                <MudChip T="String" Size="Size.Small" Color="Color.Success">
+                                    @panel.Result.RowCount rows
+                                </MudChip>
+                            }
+                            else
+                            {
+                                <MudChip T="String" Size="Size.Small" Color="Color.Error">Failed</MudChip>
+                            }
+                        </CardHeaderActions>
+                    </MudCardHeader>
+                    <MudCardContent>
+                        @if (panel.Result?.Success == true)
+                        {
+                            <ChartDisplay ChartConfig="panel.Result.ChartConfig"
+                                          Data="panel.Result.Data"
+                                          Height="280px"
+                                          ChartId="@($"panel_{panel.Order}")" />
+                        }
+                        else
+                        {
+                            <MudAlert Severity="Severity.Error" Dense="true">
+                                @panel.Result?.ErrorMessage
+                            </MudAlert>
+                        }
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+        }
+    </MudGrid>
+}
+
+@code {
+    private List<DataSource> _dataSources = new();
+    private string _selectedDataSourceId = string.Empty;
+    private string _question = string.Empty;
+    private bool _isLoading;
+    private DashboardResult? _dashboard;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _dataSources = await DataSourceRepo.GetAllActiveAsync();
+        if (_dataSources.Any())
+            _selectedDataSourceId = _dataSources.First().Id;
+    }
+
+    private async Task GenerateDashboard()
+    {
+        if (string.IsNullOrWhiteSpace(_question)) return;
+        _isLoading = true;
+        _dashboard = null;
+
+        try
+        {
+            var dataSource = await DataSourceRepo.GetByIdAsync(_selectedDataSourceId);
+            if (dataSource == null)
+            {
+                Snackbar.Add("Please select a valid data source.", Severity.Warning);
+                return;
+            }
+
+            _dashboard = await DashboardSvc.GenerateDashboardAsync(
+                _question, dataSource);
+
+            Snackbar.Add(
+                $"Dashboard generated with {_dashboard.Panels.Count} panels.",
+                Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+}

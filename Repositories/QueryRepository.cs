@@ -26,7 +26,21 @@ namespace InsightEngine.Repositories
             await _results.InsertOneAsync(result);
             return result;
         }
+        public async Task<List<QueryRequest>> GetRecentQueriesAsync(int limit)
+        {
+            return await _requests
+                .Find(_ => true)
+                .SortByDescending(q => q.CreatedDate)
+                .Limit(limit)
+                .ToListAsync();
+        }
 
+        public async Task<QueryRequest?> GetByIdAsync(string id)
+        {
+            return await _requests
+                .Find(q => q.Id == id)
+                .FirstOrDefaultAsync();
+        }
         public async Task<List<QueryRequest>> GetUserQueriesAsync(string userId)
             => await _requests
                 .Find(q => q.UserId == userId)

@@ -107,6 +107,76 @@
                 }
             });
         };
+                window.renderChartById = function (jsonData) {
+            const data = JSON.parse(jsonData);
+            const ctx = document.getElementById(data.canvasId);
+            if (!ctx) return;
+
+            // Destroy existing chart on same canvas if any
+            const existing = Chart.getChart(ctx);
+            if (existing) existing.destroy();
+
+            const backgroundColors = [
+                '#4CAF50','#2196F3','#FF9800','#9C27B0',
+                '#F44336','#00BCD4','#8BC34A','#FF5722',
+                '#607D8B','#E91E63'
+            ];
+
+            new Chart(ctx, {
+                type: data.type,
+                data: {
+                    labels: data.labels,
+                    datasets: [{
+                        label: data.yLabel,
+                        data: data.values,
+                        backgroundColor: data.type === 'line'
+                            ? 'rgba(33,150,243,0.1)'
+                            : backgroundColors,
+                        borderColor: data.type === 'line'
+                            ? '#2196F3'
+                            : backgroundColors,
+                        borderWidth: 2,
+                        fill: data.type === 'line'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: data.type === 'pie' },
+                        title: {
+                            display: true,
+                            text: data.title,
+                            font: { size: 15 }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    let value = context.parsed.y ?? context.parsed;
+                                    if (data.isCurrency)
+                                        return '$' + value.toLocaleString('en-US',
+                                            { minimumFractionDigits: 0 });
+                                    return value.toLocaleString();
+                                }
+                            }
+                        }
+                    },
+                    scales: data.type !== 'pie' ? {
+                        x: { title: { display: true, text: data.xLabel } },
+                        y: {
+                            title: { display: true, text: data.yLabel },
+                            ticks: {
+                                callback: function(value) {
+                                    if (data.isCurrency)
+                                        return '$' + value.toLocaleString();
+                                    return value.toLocaleString();
+                                }
+                            }
+                        }
+                    } : {}
+                }
+            });
+        };
     </script>
 </body>
 

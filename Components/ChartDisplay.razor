@@ -1,0 +1,145 @@
+﻿@using InsightEngine.Models.Agents
+@using InsightEngine.Services.Orchestration
+@using System.Text.Json
+@inject IJSRuntime JS
+
+@if (ChartConfig == null || Data == null || !Data.Any())
+{
+    <MudText Typo="Typo.body2" Color="Color.Secondary">No data to display.</MudText>
+    return;
+}
+
+@switch (ChartConfig.ChartType)
+{
+    case "stat_card":
+        <MudCard Elevation="3" Style="text-align:center; padding: 32px;">
+            <MudText Typo="Typo.overline" Color="Color.Secondary">
+                @ChartConfig.Title
+            </MudText>
+            <MudText Typo="Typo.h2" Color="Color.Primary">
+                @GetStatCardValue()
+            </MudText>
+            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                @ChartConfig.Reasoning
+            </MudText>
+        </MudCard>
+        break;
+
+    case "table":
+        <MudTable Items="@Data"
+                  Hover="true"
+                  Striped="true"
+                  Bordered="true"
+                  Dense="true"
+                  Elevation="1"
+                  Style="max-height:400px; overflow-y:auto">
+            <HeaderContent>
+                @foreach (var col in GetColumns())
+                {
+                    <MudTh>@col</MudTh>
+                }
+            </HeaderContent>
+            <RowTemplate>
+                @foreach (var col in GetColumns())
+                {
+                    <MudTd>
+                        @FormatValue(context.ContainsKey(col) ? context[col] : null)
+                    </MudTd>
+                }
+            </RowTemplate>
+        </MudTable>
+        break;
+
+    default:
+        <div style="position: relative; height: @Height;">
+            <canvas id="@_chartId"></canvas>
+        </div>
+        break;
+}
+
+@code {
+    [Parameter] public ChartConfiguration? ChartConfig { get; set; }
+    [Parameter] public List<Dictionary<string, object>>? Data { get; set; }
+    [Parameter] public string Height { get; set; } = "320px";
+    [Parameter] public string ChartId { get; set; } = "chart";
+
+    private string _chartId = string.Empty;
+
+    protected override void OnParametersSet()
+    {
+        _chartId = $"chart_{ChartId}_{Guid.NewGuid().ToString("N")[..6]}";
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (ChartConfig == null || Data == null || !Data.Any()) return;
+        if (ChartConfig.ChartType is "table" or "stat_card") return;
+
+        await Task.Delay(100);
+        await RenderChart();
+    }
+
+    private async Task RenderChart()
+    {
+        if (ChartConfig == null || Data == null) return;
+
+        var labels = Data
+            .Select(r => r.ContainsKey(ChartConfig.XAxis)
+                ? r[ChartConfig.XAxis]?.ToString() ?? ""
+                : "")
+            .ToList();
+
+        var values = Data
+            .Select(r => r.ContainsKey(ChartConfig.YAxis)
+                ? Convert.ToDouble(r[ChartConfig.YAxis] ?? 0)
+                : 0.0)
+            .ToList();
+
+        var jsType = ChartConfig.ChartType switch
+        {
+            "bar_chart" => "bar",
+            "line_chart" => "line",
+            "pie_chart" => "pie",
+            _ => "bar"
+        };
+
+        var payload = new
+        {
+            canvasId = _chartId,
+            type = jsType,
+            labels,
+            values,
+            title = ChartConfig.Title,
+            xLabel = ChartConfig.XAxis,
+            yLabel = ChartConfig.YAxis,
+            isCurrency = ChartConfig.NumberFormat == "currency"
+        };
+
+        await JS.InvokeVoidAsync("renderChartById",
+            JsonSerializer.Serialize(payload));
+    }
+
+    private List<string> GetColumns() =>
+        Data?.FirstOrDefault()?.Keys.ToList() ?? new();
+
+    private string GetStatCardValue()
+    {
+        if (Data == null || !Data.Any()) return "—";
+        var first = Data.First();
+        var numericKey = first.FirstOrDefault(k =>
+            k.Value is int or long or double or float or decimal);
+        if (numericKey.Value == null) return first.Values.FirstOrDefault()?.ToString() ?? "—";
+        var d = Convert.ToDouble(numericKey.Value);
+        return ChartConfig?.NumberFormat == "currency"
+            ? d.ToString("C0") : d.ToString("N2");
+    }
+
+    private string FormatValue(object? value)
+    {
+        if (value == null) return "";
+        if (ChartConfig?.NumberFormat == "currency" &&
+            double.TryParse(value.ToString(), out var d))
+            return d.ToString("C2");
+        return value.ToString() ?? "";
+    }
+}

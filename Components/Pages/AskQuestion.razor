@@ -1,12 +1,15 @@
 ﻿@page "/ask"
 @using InsightEngine.Models.DataSources
 @using InsightEngine.Models.Agents
+@using InsightEngine.Models.Queries
 @using InsightEngine.Repositories
+@using InsightEngine.Services
 @using InsightEngine.Services.Orchestration
 @using System.Text.Json
 @inject IDataSourceRepository DataSourceRepo
 @inject IQueryRepository QueryRepo
 @inject AnalysisPipelineService Pipeline
+@inject AnomalyDetectionService AnomalyDetector
 @inject ISnackbar Snackbar
 @inject IJSRuntime JS
 
@@ -72,7 +75,9 @@
 
 @if (!string.IsNullOrEmpty(_errorMessage))
 {
-    <MudAlert Severity="Severity.Error" Class="mt-4" ShowCloseIcon="true"
+    <MudAlert Severity="Severity.Error"
+              Class="mt-4"
+              ShowCloseIcon="true"
               CloseIconClicked="() => _errorMessage = string.Empty">
         @_errorMessage
     </MudAlert>
@@ -84,10 +89,6 @@
 
     <!-- Metadata chips -->
     <MudStack Row="true" Wrap="Wrap.Wrap" Class="mb-3">
-        <MudChip T="String" Color="Color.Success"
-                 Icon="@Icons.Material.Filled.CheckCircle">
-            @(_result.Confidence.ToString("P0")) Confidence
-        </MudChip>
         <MudChip T="String" Color="Color.Info"
                  Icon="@Icons.Material.Filled.Timer">
             @(_result.ExecutionTimeMs)ms
@@ -103,43 +104,21 @@
                 @(_result.ChartConfig.ChartType.Replace("_", " "))
             </MudChip>
         }
+        @if (_anomalies.Any())
+        {
+            <MudChip T="String" Color="Color.Warning"
+                     Icon="@Icons.Material.Filled.Warning">
+                @(_anomalies.Count) anomaly alert(s)
+            </MudChip>
+        }
     </MudStack>
 
-    <!-- Statistics Cards -->
-    @if (_result.Statistics.Any())
-    {
-        <MudGrid Class="mb-4">
-            @foreach (var stat in GetKeyStats())
-            {
-                <MudItem xs="6" sm="3">
-                    <MudCard Elevation="1">
-                        <MudCardContent Class="pa-3">
-                            <MudText Typo="Typo.caption"
-                                     Color="Color.Secondary">
-                                @stat.Key
-                            </MudText>
-                            <MudText Typo="Typo.h6">@stat.Value</MudText>
-                        </MudCardContent>
-                    </MudCard>
-                </MudItem>
-            }
-        </MudGrid>
-    }
-
-    <!-- Trends -->
-    @if (_result.Trends.Any())
-    {
-        <MudStack Row="true" Wrap="Wrap.Wrap" Class="mb-3">
-            @foreach (var trend in _result.Trends)
-            {
-                <MudChip T="String" Color="@GetTrendColor(trend.Type)"
-                         Icon="@GetTrendIcon(trend.Type)">
-                    @trend.Column: @trend.Type
-                    (@trend.Magnitude.ToString("F1")%)
-                </MudChip>
-            }
-        </MudStack>
-    }
+    <!-- Statistics + Trends + Outliers + Anomalies Panel -->
+    <StatisticsPanel Statistics="_result.Statistics"
+                     Trends="_result.Trends"
+                     Outliers="_result.Outliers"
+                     Anomalies="_anomalies"
+                     NumberFormat="@(_result.ChartConfig?.NumberFormat ?? "number")" />
 
     <!-- Chart -->
     @if (_result.ChartConfig != null &&
@@ -159,11 +138,19 @@
                 </CardHeaderContent>
             </MudCardHeader>
             <MudCardContent>
-                <div style="position: relative; height: 350px;">
-                    <canvas id="insightChart"></canvas>
-                </div>
+                <ChartDisplay ChartConfig="_result.ChartConfig"
+                              Data="_result.Data"
+                              Height="350px"
+                              ChartId="main" />
             </MudCardContent>
         </MudCard>
+    }
+
+    @if (_result.ChartConfig?.ChartType == "stat_card" && _result.Data.Any())
+    {
+        <ChartDisplay ChartConfig="_result.ChartConfig"
+                      Data="_result.Data"
+                      ChartId="statcard" />
     }
 
     <!-- Generated SQL -->
@@ -235,6 +222,7 @@
     private string _currentStage = string.Empty;
     private PipelineResult? _result;
     private List<string> _columns = new();
+    private List<AnomalyAlert> _anomalies = new();
 
     protected override async Task OnInitializedAsync()
     {
@@ -251,6 +239,7 @@
         _errorMessage = string.Empty;
         _result = null;
         _columns = new();
+        _anomalies = new();
 
         try
         {
@@ -282,22 +271,32 @@
             if (_result.Data.Any())
                 _columns = _result.Data.First().Keys.ToList();
 
+            // Run anomaly detection
+            try
+            {
+                _anomalies = AnomalyDetector.DetectAnomalies(_result.Data);
+            }
+            catch (Exception ex)
+            {
+                // Non-fatal — just log and continue
+                Console.WriteLine($"Anomaly detection skipped: {ex.Message}");
+            }
+
             // Save to MongoDB
-            var queryRequest = new InsightEngine.Models.Queries.QueryRequest
+            var queryRequest = new QueryRequest
             {
                 NaturalLanguageQuery = _question,
                 DataSourceId = _selectedDataSourceId,
-                Status = InsightEngine.Models.Queries.QueryStatus.Completed
+                Status = QueryStatus.Completed
             };
             await QueryRepo.SaveQueryAsync(queryRequest);
 
-            var queryResult = new InsightEngine.Models.Queries.QueryResult
+            var queryResult = new QueryResult
             {
                 QueryRequestId = queryRequest.Id,
                 GeneratedSQL = _result.GeneratedSQL,
                 Confidence = _result.Confidence,
-                TablesUsed = _result.ChartConfig != null
-                    ? new List<string>() : new List<string>(),
+                TablesUsed = new List<string>(),
                 Explanation = _result.ChartConfig?.Reasoning ?? string.Empty,
                 ExecutionTimeMs = _result.ExecutionTimeMs,
                 RowCount = _result.RowCount,
@@ -306,15 +305,6 @@
             await QueryRepo.SaveResultAsync(queryResult);
 
             Snackbar.Add("Analysis complete!", Severity.Success);
-
-            // Render chart after DOM update
-            if (_result.ChartConfig != null &&
-                _result.ChartConfig.ChartType != "table" &&
-                _result.ChartConfig.ChartType != "stat_card")
-            {
-                await Task.Delay(200);
-                await RenderChart();
-            }
         }
         catch (Exception ex)
         {
@@ -327,97 +317,12 @@
         }
     }
 
-    private async Task RenderChart()
-    {
-        if (_result?.ChartConfig == null || !_result.Data.Any()) return;
-
-        var config = _result.ChartConfig;
-        var labels = _result.Data
-            .Select(r => r.ContainsKey(config.XAxis)
-                ? r[config.XAxis]?.ToString() ?? string.Empty
-                : string.Empty)
-            .ToList();
-
-        var values = _result.Data
-            .Select(r => r.ContainsKey(config.YAxis)
-                ? Convert.ToDouble(r[config.YAxis] ?? 0)
-                : 0.0)
-            .ToList();
-
-        var chartJsType = config.ChartType switch
-        {
-            "bar_chart" => "bar",
-            "line_chart" => "line",
-            "pie_chart" => "pie",
-            _ => "bar"
-        };
-
-        var chartData = new
-        {
-            type = chartJsType,
-            labels = labels,
-            values = values,
-            title = config.Title,
-            xLabel = config.XAxis,
-            yLabel = config.YAxis,
-            isCurrency = config.NumberFormat == "currency"
-        };
-
-        await JS.InvokeVoidAsync("renderInsightChart",
-            JsonSerializer.Serialize(chartData));
-    }
-
-    private List<KeyValuePair<string, string>> GetKeyStats()
-    {
-        var result = new List<KeyValuePair<string, string>>();
-        var keyTypes = new[] { "_total", "_average", "_max", "_min" };
-
-        foreach (var stat in _result!.Statistics)
-        {
-            if (keyTypes.Any(t => stat.Key.EndsWith(t)))
-            {
-                var label = stat.Key
-                    .Replace("_total", " Total")
-                    .Replace("_average", " Average")
-                    .Replace("_max", " Max")
-                    .Replace("_min", " Min")
-                    .Replace("_", " ");
-
-                var value = stat.Value is double d
-                    ? (_result.ChartConfig?.NumberFormat == "currency"
-                        ? d.ToString("C0")
-                        : d.ToString("N2"))
-                    : stat.Value?.ToString() ?? string.Empty;
-
-                result.Add(new KeyValuePair<string, string>(label, value));
-
-                if (result.Count >= 4) break;
-            }
-        }
-
-        return result;
-    }
-
     private string FormatValue(object? value, string? format)
     {
         if (value == null) return string.Empty;
-        if (format == "currency" && double.TryParse(
-            value.ToString(), out var d))
+        if (format == "currency" &&
+            double.TryParse(value.ToString(), out var d))
             return d.ToString("C2");
         return value.ToString() ?? string.Empty;
     }
-
-    private Color GetTrendColor(string type) => type switch
-    {
-        "increasing" => Color.Success,
-        "decreasing" => Color.Error,
-        _ => Color.Default
-    };
-
-    private string GetTrendIcon(string type) => type switch
-    {
-        "increasing" => Icons.Material.Filled.TrendingUp,
-        "decreasing" => Icons.Material.Filled.TrendingDown,
-        _ => Icons.Material.Filled.TrendingFlat
-    };
 }
