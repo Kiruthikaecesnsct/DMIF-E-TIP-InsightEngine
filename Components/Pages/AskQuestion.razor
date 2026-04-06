@@ -1,26 +1,26 @@
 ﻿@page "/ask"
 @using InsightEngine.Models.DataSources
+@using InsightEngine.Models.Agents
 @using InsightEngine.Repositories
-@using InsightEngine.Services
-@using InsightEngine.Services.Agents
+@using InsightEngine.Services.Orchestration
 @using System.Text.Json
-@inject QueryInterpreterAgent QueryAgent
-@inject SqlExecutorService SqlExecutor
 @inject IDataSourceRepository DataSourceRepo
 @inject IQueryRepository QueryRepo
+@inject AnalysisPipelineService Pipeline
 @inject ISnackbar Snackbar
+@inject IJSRuntime JS
 
 <PageTitle>Ask a Question</PageTitle>
 
 <MudText Typo="Typo.h4" Class="mb-4">Ask a Business Question</MudText>
 
 <MudGrid>
-    <MudItem xs="12">
+    <MudItem xs="12" sm="6">
         <MudSelect T="string"
                    Label="Select Data Source"
                    @bind-Value="_selectedDataSourceId"
                    Variant="Variant.Outlined"
-                   Class="mb-3">
+                   FullWidth="true">
             @foreach (var ds in _dataSources)
             {
                 <MudSelectItem Value="@ds.Id">@ds.Name</MudSelectItem>
@@ -33,15 +33,14 @@
                       Label="Ask your question in plain English"
                       Placeholder="e.g. What were the top 5 products by revenue last quarter?"
                       Variant="Variant.Outlined"
-                      Lines="3"
-                      FullWidth="true"
-                      Class="mb-3" />
+                      Lines="2"
+                      FullWidth="true" />
     </MudItem>
 
     <MudItem xs="12">
         <MudButton Variant="Variant.Filled"
                    Color="Color.Primary"
-                   OnClick="AskQuestions"
+                   OnClick="RunPipeline"
                    Disabled="@(_isLoading || string.IsNullOrWhiteSpace(_question))"
                    Size="Size.Large">
             @if (_isLoading)
@@ -53,12 +52,23 @@
             }
             else
             {
-                <MudIcon Icon="@Icons.Material.Filled.Search" Class="mr-2" />
+                <MudIcon Icon="@Icons.Material.Filled.AutoAwesome"
+                         Class="mr-2" />
                 <span>Ask Question</span>
             }
         </MudButton>
     </MudItem>
 </MudGrid>
+
+@if (_isLoading)
+{
+    <MudCard Class="mt-4">
+        <MudCardContent>
+            <MudText Typo="Typo.body2" Class="mb-2">@_currentStage</MudText>
+            <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+        </MudCardContent>
+    </MudCard>
+}
 
 @if (!string.IsNullOrEmpty(_errorMessage))
 {
@@ -68,50 +78,128 @@
     </MudAlert>
 }
 
-@if (_result != null)
+@if (_result != null && _result.Success)
 {
     <MudDivider Class="my-4" />
 
-    <!-- Metadata Row -->
-    <MudGrid Class="mb-3">
-        <MudItem xs="12" sm="4">
-            <MudChip T="String" Color="Color.Success" Icon="@Icons.Material.Filled.CheckCircle">
-                Confidence: @(_result.Confidence.ToString("P0"))
+    <!-- Metadata chips -->
+    <MudStack Row="true" Wrap="Wrap.Wrap" Class="mb-3">
+        <MudChip T="String" Color="Color.Success"
+                 Icon="@Icons.Material.Filled.CheckCircle">
+            @(_result.Confidence.ToString("P0")) Confidence
+        </MudChip>
+        <MudChip T="String" Color="Color.Info"
+                 Icon="@Icons.Material.Filled.Timer">
+            @(_result.ExecutionTimeMs)ms
+        </MudChip>
+        <MudChip T="String" Color="Color.Primary"
+                 Icon="@Icons.Material.Filled.TableRows">
+            @(_result.RowCount) rows
+        </MudChip>
+        @if (_result.ChartConfig != null)
+        {
+            <MudChip T="String" Color="Color.Secondary"
+                     Icon="@Icons.Material.Filled.BarChart">
+                @(_result.ChartConfig.ChartType.Replace("_", " "))
             </MudChip>
-        </MudItem>
-        <MudItem xs="12" sm="4">
-            <MudChip T="String" Color="Color.Info" Icon="@Icons.Material.Filled.Timer">
-                @(_result.ExecutionTimeMs)ms
-            </MudChip>
-        </MudItem>
-        <MudItem xs="12" sm="4">
-            <MudChip T="String" Color="Color.Primary" Icon="@Icons.Material.Filled.TableRows">
-                @(_result.RowCount) rows
-            </MudChip>
-        </MudItem>
-    </MudGrid>
+        }
+    </MudStack>
 
-    <!-- Explanation -->
-    <MudAlert Severity="Severity.Info" Class="mb-3">
-        @_result.Explanation
-    </MudAlert>
+    <!-- Statistics Cards -->
+    @if (_result.Statistics.Any())
+    {
+        <MudGrid Class="mb-4">
+            @foreach (var stat in GetKeyStats())
+            {
+                <MudItem xs="6" sm="3">
+                    <MudCard Elevation="1">
+                        <MudCardContent Class="pa-3">
+                            <MudText Typo="Typo.caption"
+                                     Color="Color.Secondary">
+                                @stat.Key
+                            </MudText>
+                            <MudText Typo="Typo.h6">@stat.Value</MudText>
+                        </MudCardContent>
+                    </MudCard>
+                </MudItem>
+            }
+        </MudGrid>
+    }
+
+    <!-- Trends -->
+    @if (_result.Trends.Any())
+    {
+        <MudStack Row="true" Wrap="Wrap.Wrap" Class="mb-3">
+            @foreach (var trend in _result.Trends)
+            {
+                <MudChip T="String" Color="@GetTrendColor(trend.Type)"
+                         Icon="@GetTrendIcon(trend.Type)">
+                    @trend.Column: @trend.Type
+                    (@trend.Magnitude.ToString("F1")%)
+                </MudChip>
+            }
+        </MudStack>
+    }
+
+    <!-- Chart -->
+    @if (_result.ChartConfig != null &&
+         _result.ChartConfig.ChartType != "table" &&
+         _result.ChartConfig.ChartType != "stat_card" &&
+         _result.Data.Any())
+    {
+        <MudCard Class="mb-4" Elevation="2">
+            <MudCardHeader>
+                <CardHeaderContent>
+                    <MudText Typo="Typo.h6">
+                        @_result.ChartConfig.Title
+                    </MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        @_result.ChartConfig.Reasoning
+                    </MudText>
+                </CardHeaderContent>
+            </MudCardHeader>
+            <MudCardContent>
+                <div style="position: relative; height: 350px;">
+                    <canvas id="insightChart"></canvas>
+                </div>
+            </MudCardContent>
+        </MudCard>
+    }
 
     <!-- Generated SQL -->
     <MudExpansionPanels Class="mb-4">
         <MudExpansionPanel Text="View Generated SQL">
             <MudText Typo="Typo.body2"
                      Style="font-family: monospace; white-space: pre-wrap;
-                            background:#f5f5f5; padding:16px; border-radius:4px">
+                            background:#f5f5f5; padding:16px; border-radius:4px;
+                            font-size:13px">
                 @_result.GeneratedSQL
             </MudText>
         </MudExpansionPanel>
+
+        @if (_result.Statistics.Any())
+        {
+            <MudExpansionPanel Text="View All Statistics">
+                <MudSimpleTable Dense="true">
+                    <tbody>
+                        @foreach (var stat in _result.Statistics)
+                        {
+                            <tr>
+                                <td><strong>@stat.Key</strong></td>
+                                <td>@stat.Value</td>
+                            </tr>
+                        }
+                    </tbody>
+                </MudSimpleTable>
+            </MudExpansionPanel>
+        }
     </MudExpansionPanels>
 
     <!-- Results Table -->
-    @if (_rows.Any())
+    @if (_result.Data.Any())
     {
-        <MudText Typo="Typo.h6" Class="mb-2">Results</MudText>
-        <MudTable Items="@_rows"
+        <MudText Typo="Typo.h6" Class="mb-2">Data Results</MudText>
+        <MudTable Items="@_result.Data"
                   Hover="true"
                   Striped="true"
                   Bordered="true"
@@ -127,7 +215,10 @@
                 @foreach (var col in _columns)
                 {
                     <MudTd>
-                        @(context.ContainsKey(col) ? context[col]?.ToString() : "")
+                        @(context.ContainsKey(col)
+                            ? FormatValue(context[col],
+                                _result.ChartConfig?.NumberFormat)
+                            : "")
                     </MudTd>
                 }
             </RowTemplate>
@@ -141,9 +232,8 @@
     private string _question = string.Empty;
     private bool _isLoading;
     private string _errorMessage = string.Empty;
-
-    private InsightEngine.Models.Queries.QueryResult? _result;
-    private List<Dictionary<string, object>> _rows = new();
+    private string _currentStage = string.Empty;
+    private PipelineResult? _result;
     private List<string> _columns = new();
 
     protected override async Task OnInitializedAsync()
@@ -153,23 +243,17 @@
             _selectedDataSourceId = _dataSources.First().Id;
     }
 
-    private async Task AskQuestions()
+    private async Task RunPipeline()
     {
-        if (string.IsNullOrWhiteSpace(_question))
-        {
-            _errorMessage = "Please enter a question.";
-            return;
-        }
+        if (string.IsNullOrWhiteSpace(_question)) return;
 
         _isLoading = true;
         _errorMessage = string.Empty;
         _result = null;
-        _rows = new();
         _columns = new();
 
         try
         {
-            // Get selected data source
             var dataSource = await DataSourceRepo
                 .GetByIdAsync(_selectedDataSourceId);
 
@@ -179,75 +263,161 @@
                 return;
             }
 
-            // Save query request
+            _currentStage = "Stage 1/3: Interpreting your question...";
+            StateHasChanged();
+            await Task.Delay(50);
+
+            _result = await Pipeline.ExecuteAsync(_question, dataSource);
+
+            if (!_result.Success)
+            {
+                _errorMessage = _result.ErrorMessage
+                    ?? "An error occurred. Please try again.";
+                return;
+            }
+
+            _currentStage = "Stage 3/3: Preparing visualization...";
+            StateHasChanged();
+
+            if (_result.Data.Any())
+                _columns = _result.Data.First().Keys.ToList();
+
+            // Save to MongoDB
             var queryRequest = new InsightEngine.Models.Queries.QueryRequest
             {
                 NaturalLanguageQuery = _question,
                 DataSourceId = _selectedDataSourceId,
-                Status = InsightEngine.Models.Queries.QueryStatus.Processing
+                Status = InsightEngine.Models.Queries.QueryStatus.Completed
             };
             await QueryRepo.SaveQueryAsync(queryRequest);
 
-            // Call Query Interpreter Agent
-            var agentResult = await QueryAgent.InterpretQueryAsync(
-                _question, dataSource.SchemaMetadata);
-
-            if (string.IsNullOrEmpty(agentResult.GeneratedSQL))
-            {
-                _errorMessage = "Agent could not generate a SQL query. " +
-                                "Please try rephrasing your question.";
-                return;
-            }
-
-            // Validate SQL safety
-            if (!QueryAgent.ValidateQuery(agentResult.GeneratedSQL))
-            {
-                _errorMessage = "Generated query failed safety validation.";
-                return;
-            }
-
-            // Execute query
-            var execution = await SqlExecutor.ExecuteQueryAsync(
-                agentResult.GeneratedSQL,
-                dataSource.ConnectionString);
-
-            // Build result
-            _result = new InsightEngine.Models.Queries.QueryResult
+            var queryResult = new InsightEngine.Models.Queries.QueryResult
             {
                 QueryRequestId = queryRequest.Id,
-                GeneratedSQL = agentResult.GeneratedSQL,
-                Confidence = agentResult.Confidence,
-                TablesUsed = agentResult.TablesUsed,
-                Explanation = agentResult.Explanation,
-                ExecutionTimeMs = execution.ExecutionTimeMs,
-                RowCount = execution.RowCount,
-                RawResults = JsonSerializer.Serialize(execution.Rows),
-                ErrorMessage = execution.ErrorMessage
+                GeneratedSQL = _result.GeneratedSQL,
+                Confidence = _result.Confidence,
+                TablesUsed = _result.ChartConfig != null
+                    ? new List<string>() : new List<string>(),
+                Explanation = _result.ChartConfig?.Reasoning ?? string.Empty,
+                ExecutionTimeMs = _result.ExecutionTimeMs,
+                RowCount = _result.RowCount,
+                RawResults = JsonSerializer.Serialize(_result.Data)
             };
+            await QueryRepo.SaveResultAsync(queryResult);
 
-            // Save result
-            await QueryRepo.SaveResultAsync(_result);
+            Snackbar.Add("Analysis complete!", Severity.Success);
 
-            if (!execution.IsSuccess)
+            // Render chart after DOM update
+            if (_result.ChartConfig != null &&
+                _result.ChartConfig.ChartType != "table" &&
+                _result.ChartConfig.ChartType != "stat_card")
             {
-                _errorMessage = execution.ErrorMessage ?? "Query execution failed.";
-                return;
+                await Task.Delay(200);
+                await RenderChart();
             }
-
-            // Build table columns and rows
-            _rows = execution.Rows;
-            if (_rows.Any())
-                _columns = _rows.First().Keys.ToList();
-
-            Snackbar.Add("Query completed successfully!", Severity.Success);
         }
         catch (Exception ex)
         {
-            _errorMessage = $"An error occurred: {ex.Message}";
+            _errorMessage = $"Error: {ex.Message}";
         }
         finally
         {
             _isLoading = false;
+            _currentStage = string.Empty;
         }
     }
+
+    private async Task RenderChart()
+    {
+        if (_result?.ChartConfig == null || !_result.Data.Any()) return;
+
+        var config = _result.ChartConfig;
+        var labels = _result.Data
+            .Select(r => r.ContainsKey(config.XAxis)
+                ? r[config.XAxis]?.ToString() ?? string.Empty
+                : string.Empty)
+            .ToList();
+
+        var values = _result.Data
+            .Select(r => r.ContainsKey(config.YAxis)
+                ? Convert.ToDouble(r[config.YAxis] ?? 0)
+                : 0.0)
+            .ToList();
+
+        var chartJsType = config.ChartType switch
+        {
+            "bar_chart" => "bar",
+            "line_chart" => "line",
+            "pie_chart" => "pie",
+            _ => "bar"
+        };
+
+        var chartData = new
+        {
+            type = chartJsType,
+            labels = labels,
+            values = values,
+            title = config.Title,
+            xLabel = config.XAxis,
+            yLabel = config.YAxis,
+            isCurrency = config.NumberFormat == "currency"
+        };
+
+        await JS.InvokeVoidAsync("renderInsightChart",
+            JsonSerializer.Serialize(chartData));
+    }
+
+    private List<KeyValuePair<string, string>> GetKeyStats()
+    {
+        var result = new List<KeyValuePair<string, string>>();
+        var keyTypes = new[] { "_total", "_average", "_max", "_min" };
+
+        foreach (var stat in _result!.Statistics)
+        {
+            if (keyTypes.Any(t => stat.Key.EndsWith(t)))
+            {
+                var label = stat.Key
+                    .Replace("_total", " Total")
+                    .Replace("_average", " Average")
+                    .Replace("_max", " Max")
+                    .Replace("_min", " Min")
+                    .Replace("_", " ");
+
+                var value = stat.Value is double d
+                    ? (_result.ChartConfig?.NumberFormat == "currency"
+                        ? d.ToString("C0")
+                        : d.ToString("N2"))
+                    : stat.Value?.ToString() ?? string.Empty;
+
+                result.Add(new KeyValuePair<string, string>(label, value));
+
+                if (result.Count >= 4) break;
+            }
+        }
+
+        return result;
+    }
+
+    private string FormatValue(object? value, string? format)
+    {
+        if (value == null) return string.Empty;
+        if (format == "currency" && double.TryParse(
+            value.ToString(), out var d))
+            return d.ToString("C2");
+        return value.ToString() ?? string.Empty;
+    }
+
+    private Color GetTrendColor(string type) => type switch
+    {
+        "increasing" => Color.Success,
+        "decreasing" => Color.Error,
+        _ => Color.Default
+    };
+
+    private string GetTrendIcon(string type) => type switch
+    {
+        "increasing" => Icons.Material.Filled.TrendingUp,
+        "decreasing" => Icons.Material.Filled.TrendingDown,
+        _ => Icons.Material.Filled.TrendingFlat
+    };
 }
